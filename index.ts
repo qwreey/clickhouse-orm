@@ -26,7 +26,7 @@ export class TypedValue {
   public get type(): string {
     return this._type;
   }
-  public get value(): string {
+  public get value(): any {
     return this._value;
   }
 }
