@@ -1,6 +1,16 @@
 import { createClient } from "@clickhouse/client";
 import type { NodeClickHouseClient } from "@clickhouse/client/dist/client";
-import { Type, type Static, type TSchema } from "@sinclair/typebox";
+import {
+  Type,
+  type ObjectOptions,
+  type Static,
+  type TAny,
+  type TLiteral,
+  type TObject,
+  type TSchema,
+  type TString,
+  type TUnion,
+} from "@sinclair/typebox";
 import util from "node:util";
 
 // #region default
@@ -84,6 +94,7 @@ export async function getCreateTableSqlFor(tableName: string): Promise<string> {
       format: "JSONEachRow",
     });
 
+    // 클릭하우스는 'statement'라는 키 값으로 전체 구조 SQL을 뱉어줘~
     const data = (await result.json()) as { statement: string }[];
 
     if (data.length > 0) {
@@ -249,6 +260,7 @@ class CHMigration {
     await this.command(
       `ALTER TABLE ${this.inner.tableName} DROP INDEX ${skipping.name}`,
     );
+    await this.comment.deleteValue(`#index_${skipping.name}`);
   }
   private async createSkipping(
     skipping: CHBuilder.Skipping,
@@ -260,6 +272,10 @@ class CHMigration {
     );
     await this.command(
       `ALTER TABLE ${this.inner.tableName} MATERIALIZE INDEX ${skipping.name}`,
+    );
+    await this.comment.setValue(
+      `#index_${skipping.name}`,
+      JSON.stringify(skipping),
     );
   }
   private async syncSkipping(): Promise<boolean> {
@@ -282,18 +298,28 @@ class CHMigration {
 
       // Should be deleted
       if (!matched) {
-        this.log(`update skipping '${dbItem.name}'`);
+        this.log(`delete skipping '${dbItem.name}'`);
         await this.deleteSkipping(dbItem);
         updated = true;
         continue;
       }
 
-      // Should be updated
-      if (
+      // Fetch last migration status
+      const lastMigration = JSON.parse(
+        (await this.comment.getValue(`#index_${dbItem.name}`)) ?? "null",
+      ) as CHBuilder.Skipping | null;
+
+      // Calculate diff
+      const dbDiff =
         normalizeForDiff(matched.expr) != normalizeForDiff(dbItem.expr) ||
         normalizeForDiff(matched.type.toString()) !=
-          normalizeForDiff(dbItem.type.toString())
-      ) {
+          normalizeForDiff(dbItem.type.toString());
+      const migrationDiff =
+        matched.expr != lastMigration?.expr ||
+        matched.type != lastMigration?.type;
+
+      // Should be updated
+      if (dbDiff && migrationDiff) {
         this.log(`update skipping '${matched.name}'`);
         await this.deleteSkipping(matched);
         await this.createSkipping(matched);
@@ -907,6 +933,11 @@ export class CHBuilder<
           : never;
         hasDefault: Default extends string ? true : false;
         vaild: true;
+        typeboxSchema: Schema;
+        type: Type;
+        typeboxMapped: Type extends keyof CHBuilder.ClickHouseTypeboxMap
+          ? CHBuilder.ClickHouseTypeboxMap[Type]
+          : never;
       };
     }
   > {
@@ -931,6 +962,16 @@ export class CHBuilder<
         query: CHBuilder.LogLevel;
         hasDefault: false;
         vaild: true;
+        type: CustomColumnType;
+        typeboxSchema: TUnion<
+          [
+            TLiteral<"DEBUG">,
+            TLiteral<"INFO">,
+            TLiteral<"WARN">,
+            TLiteral<"ERROR">,
+            TLiteral<"FATAL">,
+          ]
+        >;
       };
     }
   > {
@@ -987,8 +1028,11 @@ export namespace CHBuilder {
     [key: string]: {
       selected: any;
       query: any;
+      type: string | CustomColumnType;
+      typeboxMapped: TSchema | undefined;
       hasDefault: boolean;
       vaild: false;
+      typeboxSchema: TSchema | undefined;
     };
   };
 
@@ -1010,12 +1054,21 @@ export namespace CHBuilder {
   export type LogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL";
   export type DefaultFields = {
     timestamp: {
+      type: "DateTime64(3)";
       selected: string;
       query: string;
       hasDefault: true;
       vaild: true;
+      typeboxMapped: TString;
     };
-    eventId: { selected: string; query: string; hasDefault: true; vaild: true };
+    eventId: {
+      type: "UUID";
+      selected: string;
+      query: string;
+      hasDefault: true;
+      vaild: true;
+      typeboxMapped: TString;
+    };
   } & FieldsType;
 
   // 스킵 색인 필드 선언
@@ -1070,45 +1123,50 @@ export namespace CHBuilder {
   }
 
   // 타입 맵 (Clickhouse type => typescript client type)
-  export type ClickHouseTypeMap = {
+  export const ClickHouseTypeboxMap = {
     // 문자열 및 식별자
-    String: string;
-    FixedString: string;
-    UUID: string;
+    String: Type.String(),
+    FixedString: Type.String(),
+    UUID: Type.String(),
 
     // 숫자 (JS number 범위 내)
-    Int8: number;
-    UInt8: number;
-    Int16: number;
-    UInt16: number;
-    Int32: number;
-    UInt32: number;
-    Float32: number;
-    Float64: number;
+    Int8: Type.Number(),
+    UInt8: Type.Number(),
+    Int16: Type.Number(),
+    UInt16: Type.Number(),
+    Int32: Type.Number(),
+    UInt32: Type.Number(),
+    Float32: Type.Number(),
+    Float64: Type.Number(),
 
     // 큰 숫자 (@clickhouse/client 기본값은 string)
-    Int64: string;
-    UInt64: string;
-    Int128: string;
-    UInt128: string;
-    Int256: string;
-    UInt256: string;
-    Decimal: string;
+    Int64: Type.String(),
+    UInt64: Type.String(),
+    Int128: Type.String(),
+    UInt128: Type.String(),
+    Int256: Type.String(),
+    UInt256: Type.String(),
+    Decimal: Type.String(),
 
     // 논리값
-    Bool: boolean;
+    Bool: Type.Boolean(),
 
-    Date: string;
-    Date32: string;
-    DateTime: string;
-    DateTime64: string;
-    "DateTime64(3)": string;
-    "DateTime64(6)": string;
-    "DateTime64(9)": string;
+    Date: Type.String(),
+    Date32: Type.String(),
+    DateTime: Type.String(),
+    DateTime64: Type.String(),
+    "DateTime64(3)": Type.String(),
+    "DateTime64(6)": Type.String(),
+    "DateTime64(9)": Type.String(),
 
-    JSON: any;
-
-    $any: any;
+    JSON: Type.Any(),
+    $any: Type.Any(),
+  };
+  export type ClickHouseTypeboxMap = typeof ClickHouseTypeboxMap;
+  export type ClickHouseTypeMap = {
+    [K in keyof typeof ClickHouseTypeboxMap]: Static<
+      (typeof ClickHouseTypeboxMap)[K]
+    >;
   };
 }
 // #endregion Builder
@@ -1131,6 +1189,31 @@ export class CHModel<Fields extends CHBuilder.FieldsType> {
     this.inner.loggingFunction(
       `ClickhouseModel(${this.inner.tableName}) ${msg}`,
     );
+  }
+
+  /**
+   * 쿼리 결과를 타입박스 타입으로 내보냅니다.
+   */
+  public asTypebox(options?: ObjectOptions | undefined): TObject<{
+    [K in keyof Fields as Fields[K]["vaild"] extends true
+      ? K
+      : never]: Fields[K]["typeboxSchema"] extends TSchema
+      ? Fields[K]["typeboxSchema"]
+      : Fields[K]["typeboxMapped"] extends TSchema
+      ? Fields[K]["typeboxMapped"]
+      : TAny;
+  }> {
+    const properties = {} as any;
+    for (const column of this.inner.columnList) {
+      if (column.schema) {
+        properties[column.name] = column.schema;
+      } else if (typeof column.type == "string") {
+        properties[column.name] = CHBuilder.ClickHouseTypeboxMap[column.type];
+      } else {
+        properties[column.name] = Type.Any();
+      }
+    }
+    return Type.Object(properties, options) as any;
   }
 
   /** 이 모델에 대한 빌더를 반환합니다.
