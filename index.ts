@@ -1,11 +1,11 @@
 import { createClient } from "@clickhouse/client";
 import type { NodeClickHouseClient } from "@clickhouse/client/dist/client";
-import { type Static, type TSchema } from "@sinclair/typebox";
+import { Type, type Static, type TSchema } from "@sinclair/typebox";
 
 /** sql: 유저 사용자 지정 Query */
 export class UnsafeRawQuery {
   private _query: string;
-  constructor(rawQuery: string) {
+  public constructor(rawQuery: string) {
     this._query = rawQuery;
   }
   public get query(): string {
@@ -17,7 +17,7 @@ export class UnsafeRawQuery {
 export class TypedValue {
   private _type: string;
   private _value: any;
-  constructor(type: string, value: any) {
+  public constructor(type: string, value: any) {
     this._type = type;
     this._value = value;
   }
@@ -29,12 +29,28 @@ export class TypedValue {
   }
 }
 
+export class CustomType {
+  private type: string;
+  public constructor(type: string) {
+    this.type = type.trim();
+  }
+  trim(): string {
+    return this.type;
+  }
+}
+
 // TODO: improve this
 let client: NodeClickHouseClient | undefined;
 /** create singleton client */
 export function getClient() {
   return (client ??= createClient({
     url: process.env.CLICKHOUSE_URL || "http://localhost:8123",
+    clickhouse_settings: {
+      // 비동기 삽입 활성화
+      async_insert: 1,
+      // 서버의 메모리 버퍼에 저장될 때까지 기다릴지 여부 (1: 대기, 0: 즉시 응답)
+      wait_for_async_insert: 1,
+    },
   }));
 }
 
@@ -213,7 +229,7 @@ class CHMigration {
       const codecPart = item.codec ? `CODEC(${item.codec})` : "";
       const ttlPart = item.ttl ? `TTL ${item.ttl}` : "";
       const fullDefine =
-        `${item.type} ${defaultPart} ${codecPart} ${ttlPart}`.trim();
+        `${item.type.trim()} ${defaultPart} ${codecPart} ${ttlPart}`.trim();
 
       // Create new column
       if (!dbItem) {
@@ -259,7 +275,7 @@ class CHMigration {
       await getClient().command({
         query: `
           CREATE TABLE IF NOT EXISTS ${this.tableName} (
-            timestamp DateTime64(3)
+            timestamp DateTime64(3) now64(3)
             eventId UUID DEFAULT generateUUIDv4()
             level Enum8('DEBUG'=1, 'INFO'=2, 'WARN'=3, 'ERROR'=4, 'FATAL'=5)
           )
@@ -330,7 +346,10 @@ export class CHQuery {
   public pushParam(key: string, value: any): string {
     const define = this.columns.find((i) => i.name == key);
     if (!define) throw Error(`Column '${key}' not found from definition`);
-    return this.pushTypedParam(define.queryValueType ?? define.type, value);
+    return this.pushTypedParam(
+      define.queryValueType ?? define.type.trim(),
+      value,
+    );
   }
 
   // 인자를 추가하고 그에 맞는 쿼리 스트링을 반환
@@ -529,6 +548,18 @@ export namespace CHQuery {
   export type LimitQuery = {
     limit?: number | undefined;
   };
+  export type DataQuery<Fields extends CHBuilder.FieldsType> = {
+    data: Pick<
+      { [K in keyof Fields]: Fields[K]["query"] },
+      keyof {
+        [K in keyof Fields as Fields[K]["vaild"] extends true
+          ? Fields[K]["hasDefault"] extends false
+            ? K
+            : never
+          : never]?: true;
+      }
+    >;
+  };
 
   // Result type
   export type Result<
@@ -575,11 +606,12 @@ export class CHBuilder<
 
   public withColumn<
     Name extends string,
-    Type extends keyof CHBuilder.ClickHouseTypeMap | string,
+    Type extends keyof CHBuilder.ClickHouseTypeMap | CustomType,
+    Default extends string | undefined = undefined,
     Schema extends TSchema | undefined = undefined,
     QueryValueSchema extends TSchema | undefined = undefined,
   >(
-    column: CHBuilder.Column<Name, Type, Schema, QueryValueSchema>,
+    column: CHBuilder.Column<Name, Type, Default, Schema, QueryValueSchema>,
   ): CHBuilder<
     Fields & {
       [K in Name]: {
@@ -590,9 +622,13 @@ export class CHBuilder<
           : never;
         query: QueryValueSchema extends TSchema
           ? Static<QueryValueSchema>
+          : Schema extends TSchema
+          ? Static<Schema>
           : Type extends keyof CHBuilder.ClickHouseTypeMap
           ? CHBuilder.ClickHouseTypeMap[Type]
           : never;
+        hasDefault: Default extends string ? true : false;
+        vaild: true;
       };
     }
   > {
@@ -607,13 +643,21 @@ export class CHBuilder<
 }
 export namespace CHBuilder {
   // Field is type holder for ClickhouseModel
-  export type FieldsType = { [key: string]: { selected: any; query: any } };
+  export type FieldsType = {
+    [key: string]: {
+      selected: any;
+      query: any;
+      hasDefault: boolean;
+      vaild: false;
+    };
+  };
 
   // Define default columns and default fields
   export const DefaultColumns = [
     {
       name: "timestamp",
       type: "DateTime64(3)",
+      default: "now64(3)",
       unmigratable: true,
     },
     {
@@ -624,17 +668,36 @@ export namespace CHBuilder {
     },
     {
       name: "level",
-      type: "Enum8('DEBUG'=1, 'INFO'=2, 'WARN'=3, 'ERROR'=4, 'FATAL'=5)",
+      type: new CustomType(
+        "Enum8('DEBUG'=1, 'INFO'=2, 'WARN'=3, 'ERROR'=4, 'FATAL'=5)",
+      ),
+      schema: Type.Union([
+        Type.Literal("DEBUG"),
+        Type.Literal("INFO"),
+        Type.Literal("WARN"),
+        Type.Literal("ERROR"),
+        Type.Literal("FATAL"),
+      ]),
       queryValueType: "String",
       unmigratable: true,
     },
-  ];
+  ] as const;
   export type LogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL";
   export type DefaultFields = {
-    timestamp: { selected: string; query: string };
-    eventId: { selected: string; query: string };
-    level: { selected: LogLevel; query: LogLevel };
-  } & { [key: string]: { selected: any; query: any } };
+    timestamp: {
+      selected: string;
+      query: string;
+      hasDefault: true;
+      vaild: true;
+    };
+    eventId: { selected: string; query: string; hasDefault: true; vaild: true };
+    level: {
+      selected: LogLevel;
+      query: LogLevel;
+      hasDefault: false;
+      vaild: true;
+    };
+  } & FieldsType;
 
   // 스킵 색인 필드 선언
   export interface Skipping {
@@ -646,15 +709,16 @@ export namespace CHBuilder {
   // 컬럼 선언
   export interface Column<
     Name extends string = string,
-    Type extends keyof ClickHouseTypeMap | string =
+    Type extends keyof ClickHouseTypeMap | CustomType =
       | keyof ClickHouseTypeMap
-      | string,
-    Schema extends TSchema | undefined = undefined,
-    QueryValueSchema extends TSchema | undefined = undefined,
+      | CustomType,
+    Default extends string | undefined = string | undefined,
+    Schema extends TSchema | undefined = TSchema | undefined,
+    QueryValueSchema extends TSchema | undefined = TSchema | undefined,
   > {
     name: Name;
     type: Type;
-    default?: string; // 예: "generateUUIDv4()"
+    default?: Default; // 예: "generateUUIDv4()"
     codec?: string; // 예: "ZSTD(3)"
     ttl?: string; // 예: "timestamp + INTERVAL 30 DAY"
     /**
@@ -672,7 +736,8 @@ export namespace CHBuilder {
      */
     queryValueType?: string;
     /**
-     * 쿼리 시 클라이언트에 전달하는 값의 타입입니다.
+     * 쿼리 시 클라이언트에 전달하는 값의 타입입니다. 만약 설정되지 않으면
+     * schema 를 사용하고 schema 도 없으면 기본 타입을 사용합니다.
      */
     queryValueSchema?: QueryValueSchema;
   }
@@ -781,6 +846,9 @@ export class CHModel<Fields extends CHBuilder.FieldsType> {
       .pushOrderByClause(query)
       .pushLimitClause(query);
 
+    console.log(builder.renderQuery());
+    console.log(builder.mapParamList());
+
     const resultSet = await getClient().query({
       query: builder.renderQuery(),
       query_params: builder.mapParamList(),
@@ -825,6 +893,14 @@ export class CHModel<Fields extends CHBuilder.FieldsType> {
     });
 
     return (await resultSet.json<Result>())?.[0] ?? null;
+  }
+
+  public async insert(data: CHQuery.DataQuery<Fields>["data"]) {
+    await getClient().insert({
+      table: this.tableName,
+      values: data,
+      format: "JSONEachRow",
+    });
   }
 }
 // #endregion Model
