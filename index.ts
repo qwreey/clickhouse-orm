@@ -94,7 +94,6 @@ export async function getCreateTableSqlFor(tableName: string): Promise<string> {
       format: "JSONEachRow",
     });
 
-    // 클릭하우스는 'statement'라는 키 값으로 전체 구조 SQL을 뱉어줘~
     const data = (await result.json()) as { statement: string }[];
 
     if (data.length > 0) {
