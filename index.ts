@@ -174,7 +174,6 @@ class CHMigration {
       type: base.type.trim(),
       default: base.default?.trim() ?? "",
       codec: base.codec?.toUpperCase()?.trim() ?? "",
-      ttl: base.ttl?.trim() ?? "",
     };
   }
   private static dbColumnNormalize(
@@ -185,7 +184,6 @@ class CHMigration {
       type: base.type.trim(),
       default: base.default_expression?.trim() ?? "",
       codec: base.compression_codec?.toUpperCase()?.trim() ?? "",
-      ttl: base.ttl_expression?.trim() ?? "",
     };
   }
   private static diffColumn(
@@ -197,9 +195,6 @@ class CHMigration {
 
     // Default is different
     if (define.default != db.default) return true;
-
-    // ttl is different
-    if (define.ttl != db.ttl) return true;
 
     // codec is different(empty not match)
     const dbCodecIsEmpty =
@@ -215,7 +210,7 @@ class CHMigration {
   private async syncColumn() {
     let updated = false;
     const query = await getClient().query({
-      query: `SELECT name, type, default_expression, compression_codec, ttl_expression 
+      query: `SELECT name, type, default_expression, compression_codec 
               FROM system.columns WHERE table = '${this.tableName}' AND database = currentDatabase()`,
       format: "JSONEachRow",
     });
@@ -228,9 +223,8 @@ class CHMigration {
       // Construct sql parts
       const defaultPart = item.default ? `DEFAULT ${item.default}` : "";
       const codecPart = item.codec ? `CODEC(${item.codec})` : "";
-      const ttlPart = item.ttl ? `TTL ${item.ttl}` : "";
       const fullDefine =
-        `${item.type.trim()} ${defaultPart} ${codecPart} ${ttlPart}`.trim();
+        `${item.type.trim()} ${defaultPart} ${codecPart}`.trim();
 
       // Create new column
       if (!dbItem) {
@@ -276,12 +270,12 @@ class CHMigration {
       await getClient().command({
         query: `
           CREATE TABLE IF NOT EXISTS ${this.tableName} (
-            timestamp DateTime64(3) now64(3)
-            eventId UUID DEFAULT generateUUIDv4()
+            timestamp DateTime64(3) DEFAULT now64(3),
+            eventId UUID DEFAULT generateUUIDv4(),
             level Enum8('DEBUG'=1, 'INFO'=2, 'WARN'=3, 'ERROR'=4, 'FATAL'=5)
           )
           ENGINE = MergeTree()
-          ORDER BY (timestamp, event_id)
+          ORDER BY (timestamp, eventId)
           PARTITION BY toYYYYMM(timestamp)
         `,
       });
@@ -306,7 +300,6 @@ namespace CHMigration {
     type: string;
     default_expression?: string;
     compression_codec?: string;
-    ttl_expression?: string;
   }
   // DB 와의 비교를 위한 선언과 DB 컬럼의 중간 형태
   export interface NormalizedColumn {
@@ -314,7 +307,6 @@ namespace CHMigration {
     type: string;
     default: string;
     codec: string;
-    ttl: string;
   }
 }
 // #endregion Migration
@@ -567,7 +559,10 @@ export namespace CHQuery {
     Fields extends CHBuilder.FieldsType,
     Query extends SelectQuery<Fields>,
   > = Query["select"] extends {}
-    ? Pick<Fields, keyof CHQuery.OnlyTrue<Query["select"]>>
+    ? Pick<
+        { [K in keyof Fields]: Fields[K]["selected"] },
+        keyof CHQuery.OnlyTrue<Query["select"]>
+      >
     : Fields;
 }
 // #endregion Query
@@ -721,7 +716,6 @@ export namespace CHBuilder {
     type: Type;
     default?: Default; // 예: "generateUUIDv4()"
     codec?: string; // 예: "ZSTD(3)"
-    ttl?: string; // 예: "timestamp + INTERVAL 30 DAY"
     /**
      * 만약 JSON 과 같은 타입에 대해 타입을 지정하려면 TypeBox 를 사용하세요
      * 이 값이 주어지면 모든 기초 타입을 덮어씁니다.
