@@ -25,6 +25,7 @@ A lightweight, type-safe ORM layer around `@clickhouse/client` for ClickHouse an
   - [insert](#insert)
   - [sync](#sync)
   - [Table-Level Key/Value Storage](#table-level-keyvalue-storage)
+  - [TypeBox Integration](#typebox-integration)
 - [Where Clause](#where-clause)
 - [Utility Classes](#utility-classes)
 - [Utility Functions](#utility-functions)
@@ -375,6 +376,61 @@ const deleted = await model.deleteTableValue("myKey"); // boolean
 Keys must match `/^[a-zA-Z_][a-zA-Z0-9_]*$/`.
 
 > The TTL is also tracked this way internally under the key `#last_ttl`.
+
+---
+
+### TypeBox Integration
+
+`CHModel.asTypebox()` generates a TypeBox `TObject` schema that mirrors the model's column structure. This makes it straightforward to share the schema between the ClickHouse model and API response validation (e.g., Fastify route schemas).
+
+```ts
+model.asTypebox(options?: ObjectOptions): TObject
+```
+
+For each valid column the schema is resolved in priority order:
+
+1. The column's explicit `schema` field (set via `withColumn({ schema: T })`)
+2. The built-in TypeBox equivalent from `ClickHouseTypeboxMap` (when `type` is a known string key)
+3. `Type.Any()` as a fallback (e.g., for `CustomColumnType` columns with no `schema`)
+
+#### ClickHouse → TypeBox type mapping
+
+| ClickHouse Type | TypeBox Schema |
+|---|---|
+| `String`, `FixedString`, `UUID` | `Type.String()` |
+| `Int8`…`Int32`, `UInt8`…`UInt32`, `Float32`, `Float64` | `Type.Number()` |
+| `Int64`…`UInt256`, `Decimal` | `Type.String()` (bigint serialised as string by `@clickhouse/client`) |
+| `Bool` | `Type.Boolean()` |
+| `Date`, `Date32`, `DateTime`, `DateTime64`, `DateTime64(3/6/9)` | `Type.String()` |
+| `JSON` | `Type.Any()` |
+| `$any` | `Type.Any()` |
+| `CustomColumnType` (no `schema`) | `Type.Any()` |
+
+The optional `options` argument is forwarded to `Type.Object()` — useful for setting `$id`, `title`, or other JSON Schema keywords.
+
+#### Example
+
+```ts
+const EventLog = new CHBuilder("EventLog")
+  .withLevel()
+  .withColumn({ name: "userId",  type: "Int64" })
+  .withColumn({
+    name:   "content",
+    type:   "JSON",
+    schema: UserModel.TPersonalInformation, // explicit TypeBox schema
+  })
+  .build();
+
+// Produces TObject:
+//   timestamp : Type.String()
+//   eventId   : Type.String()
+//   level     : Type.Union([Type.Literal("DEBUG"), ...])  ← from withLevel()
+//   userId    : Type.String()                             ← Int64 → string
+//   content   : UserModel.TPersonalInformation            ← explicit schema wins
+const TEventLog = EventLog.asTypebox({ $id: "EventLog", title: "#EventLog" });
+```
+
+Use `TEventLog` directly as a Fastify `response` schema or register it with `instance.addSchema()`.
 
 ---
 
