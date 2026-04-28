@@ -1,6 +1,7 @@
 import { createClient } from "@clickhouse/client";
 import type { NodeClickHouseClient } from "@clickhouse/client/dist/client";
 import { Type, type Static, type TSchema } from "@sinclair/typebox";
+import util from "node:util";
 
 /** sql: 유저 사용자 지정 Query */
 export class UnsafeRawQuery {
@@ -435,7 +436,7 @@ export class CHQuery {
       // Push user defined value
       if (statement instanceof TypedValue) {
         lastStatementIsCondition = false;
-        this.pushTypedParam(statement.type, statement.value);
+        this.push(this.pushTypedParam(statement.type, statement.value));
         continue;
       }
 
@@ -805,6 +806,10 @@ export class CHModel<Fields extends CHBuilder.FieldsType> {
     this.loggingFunction = loggingFunction;
   }
 
+  public log(msg: string) {
+    this.loggingFunction(`ClickhouseModel(${this.tableName}) ${msg}`);
+  }
+
   public async sync(): Promise<this> {
     const migrationHandle = new CHMigration(
       this.skippingList,
@@ -836,6 +841,9 @@ export class CHModel<Fields extends CHBuilder.FieldsType> {
       select?: CHQuery.SelectQuery<Fields>["select"];
       orderBy?: CHQuery.OrderByQuery<Fields>["orderBy"];
       limit?: CHQuery.LimitQuery["limit"];
+
+      logQuery?: boolean;
+      dryRun?: boolean;
     },
     Result = CHQuery.Result<Fields, Query>,
   >(query: Query): Promise<Result[]> {
@@ -846,12 +854,21 @@ export class CHModel<Fields extends CHBuilder.FieldsType> {
       .pushOrderByClause(query)
       .pushLimitClause(query);
 
-    console.log(builder.renderQuery());
-    console.log(builder.mapParamList());
+    const queryString = builder.renderQuery();
+    const paramList = builder.mapParamList();
+
+    if (query.logQuery) {
+      const data = util.inspect(paramList, { depth: 5, maxArrayLength: 10 });
+      this.log(`Query:\n${queryString}Data: ${data}`);
+    }
+
+    if (query.dryRun) {
+      return [];
+    }
 
     const resultSet = await getClient().query({
-      query: builder.renderQuery(),
-      query_params: builder.mapParamList(),
+      query: queryString,
+      query_params: paramList,
       format: "JSONEachRow",
     });
 
@@ -876,6 +893,9 @@ export class CHModel<Fields extends CHBuilder.FieldsType> {
        */
       select?: CHQuery.SelectQuery<Fields>["select"];
       orderBy?: CHQuery.OrderByQuery<Fields>["orderBy"];
+
+      logQuery?: boolean;
+      dryRun?: boolean;
     },
     Result = CHQuery.Result<Fields, Query>,
   >(query: Query): Promise<Result | null> {
@@ -886,9 +906,21 @@ export class CHModel<Fields extends CHBuilder.FieldsType> {
       .pushOrderByClause(query)
       .pushLimitClause({ limit: 1 });
 
+    const queryString = builder.renderQuery();
+    const paramList = builder.mapParamList();
+
+    if (query.logQuery) {
+      const data = util.inspect(paramList, { depth: 5, maxArrayLength: 10 });
+      this.log(`Query:\n${queryString}Data: ${data}`);
+    }
+
+    if (query.dryRun) {
+      return null;
+    }
+
     const resultSet = await getClient().query({
-      query: builder.renderQuery(),
-      query_params: builder.mapParamList(),
+      query: queryString,
+      query_params: paramList,
       format: "JSONEachRow",
     });
 
