@@ -31,8 +31,27 @@ export class TypedValue {
   }
 }
 
-/** 사용자 지정 타입 */
-export class CustomType {
+/**
+ * 사용자 지정 칼럼 타입
+ * 기본 타입에 인자를 부여하려는 경우 사용하세요
+ * 예: new CustomColumnType("Enum8('APPLE'=1, 'BANANA'=2)")
+ */
+export class CustomColumnType {
+  private type: string;
+  public constructor(type: string) {
+    this.type = type.trim();
+  }
+  toString(): string {
+    return this.type;
+  }
+}
+
+/**
+ * 사용자 지정 스킵 인덱스 타입.
+ * 기본 스킵 인덱스 타입에서 인자를 부여하려는 경우 사용하세요
+ * 예: new CustomSkippingType("set(0)")
+ * */
+export class CustomSkippingType {
   private type: string;
   public constructor(type: string) {
     this.type = type.trim();
@@ -87,6 +106,16 @@ export function verifyName(name: string): boolean {
     return false;
   }
   return true;
+}
+
+function normalizeForDiff<Content extends string | undefined>(
+  content: Content,
+): Content extends string
+  ? Content extends undefined
+    ? string | undefined
+    : string
+  : undefined {
+  return content?.normalize()?.replace(/\s/g, "") as any;
 }
 // #endregion default
 
@@ -226,18 +255,23 @@ class CHMigration {
     skipping: CHBuilder.Skipping,
   ): Promise<undefined> {
     await this.command(
-      `ALTER TABLE ${this.inner.tableName} ADD INDEX ${skipping.name} ${skipping.expr} TYPE ${skipping.type}`,
+      `ALTER TABLE ${this.inner.tableName} ADD INDEX ${skipping.name} ${
+        skipping.expr
+      } TYPE ${skipping.type.toString()}`,
     );
     await this.command(
-      `ALTER TABLE ${this.inner.tableName} MATERIALIZE INDEX ${skipping}`,
+      `ALTER TABLE ${this.inner.tableName} MATERIALIZE INDEX ${skipping.name}`,
     );
   }
   private async syncSkipping(): Promise<boolean> {
     // Get skippings from database
     let updated = false;
     const query = await getClient().query({
-      query: `SELECT name, expr, type FROM system.data_skipping_indices WHERE table = '${this.inner.tableName}'`,
+      query: `SELECT name, expr, type FROM system.data_skipping_indices WHERE table = {tableName:String}`,
       format: "JSONEachRow",
+      query_params: {
+        tableName: this.inner.tableName,
+      },
     });
     const dbList = (await query.json()) as CHBuilder.Skipping[];
 
@@ -256,7 +290,11 @@ class CHMigration {
       }
 
       // Should be updated
-      if (matched.expr != dbItem.expr || matched.type != dbItem.type) {
+      if (
+        normalizeForDiff(matched.expr) != normalizeForDiff(dbItem.expr) ||
+        normalizeForDiff(matched.type.toString()) !=
+          normalizeForDiff(dbItem.type.toString())
+      ) {
         this.log(`update skipping '${matched.name}'`);
         await this.deleteSkipping(matched);
         await this.createSkipping(matched);
@@ -281,9 +319,9 @@ class CHMigration {
   ): CHMigration.NormalizedColumn {
     return {
       name: base.name.trim(),
-      type: base.type.toString().replace(/\s/g, ""),
-      default: base.default?.replace(/\s/g, "") ?? "",
-      codec: base.codec?.toUpperCase()?.replace(/\s/g, "") ?? "",
+      type: normalizeForDiff(base.type.toString()),
+      default: normalizeForDiff(base.default) ?? "",
+      codec: normalizeForDiff(base.codec)?.toUpperCase() ?? "",
     };
   }
   private static dbColumnNormalize(
@@ -291,9 +329,9 @@ class CHMigration {
   ): CHMigration.NormalizedColumn {
     return {
       name: base.name.trim(),
-      type: base.type.replace(/\s/g, ""),
-      default: base.default_expression?.replace(/\s/g, "") ?? "",
-      codec: base.compression_codec?.toUpperCase()?.replace(/\s/g, "") ?? "",
+      type: normalizeForDiff(base.type),
+      default: normalizeForDiff(base.default_expression) ?? "",
+      codec: normalizeForDiff(base.compression_codec)?.toUpperCase() ?? "",
     };
   }
   private static diffColumn(
@@ -716,14 +754,19 @@ export class CHBuilder<
   private tableName: string;
   private ttlString: string | undefined;
   private loggingFunction: (msg: string) => void;
+  private autoSyncEnabled: boolean;
+  private autoSyncAllowDestructive: boolean;
   private locked: boolean;
+  private extendAllowed: boolean;
 
   public static fromFactory(factory: CHBuilder.BuilderFactory) {
     const builder = new CHBuilder(factory.tableName, factory.loggingFunction);
     builder.locked = true;
-    factory.columnList = factory.columnList;
-    factory.skippingList = factory.skippingList;
-    factory.ttlString = factory.ttlString;
+    builder.columnList = factory.columnList;
+    builder.skippingList = factory.skippingList;
+    builder.ttlString = factory.ttlString;
+    builder.autoSyncEnabled = factory.autoSyncEnabled;
+    builder.autoSyncAllowDestructive = factory.autoSyncAllowDestructive;
     return builder;
   }
 
@@ -736,10 +779,13 @@ export class CHBuilder<
     }
 
     this.locked = false;
+    this.extendAllowed = true;
     this.tableName = tableName;
     this.skippingList = [];
     this.columnList = [...CHBuilder.DefaultColumns];
     this.loggingFunction = loggingFunction;
+    this.autoSyncEnabled = false;
+    this.autoSyncAllowDestructive = false;
   }
 
   /**
@@ -766,6 +812,8 @@ export class CHBuilder<
       tableName: this.tableName,
       ttlString: this.ttlString,
       loggingFunction: this.loggingFunction,
+      autoSyncEnabled: this.autoSyncEnabled,
+      autoSyncAllowDestructive: this.autoSyncAllowDestructive,
     });
   }
 
@@ -781,9 +829,20 @@ export class CHBuilder<
   }
 
   /**
+   * 모델이 빌드 될 때 백그라운드에서 자동으로 마이그레이션을 시도합니다.
+   */
+  public withAutoSync(allowDestructive: boolean = false): this {
+    this.extendAllowed = false;
+    this.autoSyncEnabled = true;
+    this.autoSyncAllowDestructive = allowDestructive;
+    return this;
+  }
+
+  /**
    * 런타임 로깅 함수를 지정합니다
    */
   public withLoggingFunction(func: CHBuilder["loggingFunction"]): this {
+    this.extendAllowed = false;
     this.ensureWritable();
     this.loggingFunction = func;
     return this;
@@ -793,6 +852,7 @@ export class CHBuilder<
    * 테이블의 TTL 을 조절합니다. 예: `date + INTERVAL 1 MONTH`
    */
   public withTTL(ttl: string): this {
+    this.extendAllowed = false;
     this.ensureWritable();
     this.ttlString = ttl;
     return this;
@@ -805,10 +865,17 @@ export class CHBuilder<
     TargetFields extends CHBuilder.FieldsType = CHBuilder.DefaultFields,
   >(target: CHBuilder<TargetFields>): CHBuilder<Fields & TargetFields> {
     this.ensureWritable();
+    if (!this.extendAllowed) {
+      throw Error(
+        "`withExtend` is not allowed. `withExtend` must be executed before other `with` methods.",
+      );
+    }
     this.columnList = [...this.columnList, ...target.columnList];
     this.skippingList = [...this.skippingList, ...target.skippingList];
     this.ttlString = target.ttlString;
     this.loggingFunction = target.loggingFunction;
+    this.autoSyncEnabled = target.autoSyncEnabled;
+    this.autoSyncAllowDestructive = target.autoSyncAllowDestructive;
     return this as any;
   }
 
@@ -817,7 +884,7 @@ export class CHBuilder<
    */
   public withColumn<
     Name extends string,
-    Type extends keyof CHBuilder.ClickHouseTypeMap | CustomType,
+    Type extends keyof CHBuilder.ClickHouseTypeMap | CustomColumnType,
     Default extends string | undefined = undefined,
     Schema extends TSchema | undefined = undefined,
     QueryValueSchema extends TSchema | undefined = undefined,
@@ -843,6 +910,7 @@ export class CHBuilder<
       };
     }
   > {
+    this.extendAllowed = false;
     this.ensureWritable();
     if (!verifyName(column.name)) {
       throw Error(`Column name '${column.name}' is not vaild`);
@@ -854,6 +922,7 @@ export class CHBuilder<
   /**
    * level 컬럼을 추가합니다. 로깅 데이터를 위해 일반적으로 사용되는
    * `"DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL"` enum 을 사용합니다.
+   * level 컬럼에 대해 자동으로 인덱스를 생성합니다
    */
   public withLevel(): CHBuilder<
     Fields & {
@@ -865,10 +934,11 @@ export class CHBuilder<
       };
     }
   > {
+    this.extendAllowed = false;
     this.ensureWritable();
     this.columnList.push({
       name: "level",
-      type: new CustomType(
+      type: new CustomColumnType(
         "Enum8('DEBUG'=1, 'INFO'=2, 'WARN'=3, 'ERROR'=4, 'FATAL'=5)",
       ),
       schema: Type.Union([
@@ -880,6 +950,11 @@ export class CHBuilder<
       ]),
       queryValueType: "String",
     });
+    this.withSkipping({
+      expr: "level",
+      name: "level_index",
+      type: "set",
+    });
     return this as any;
   }
 
@@ -887,6 +962,7 @@ export class CHBuilder<
    * 스킵 인덱스를 추가합니다
    */
   public withSkipping(skipping: CHBuilder.Skipping): this {
+    this.extendAllowed = false;
     this.ensureWritable();
     if (!verifyName(skipping.name)) {
       throw Error(`Skipping index name '${skipping.name}' is not vaild`);
@@ -902,6 +978,8 @@ export namespace CHBuilder {
     tableName: string;
     ttlString: string | undefined;
     loggingFunction: (msg: string) => void;
+    autoSyncEnabled: boolean;
+    autoSyncAllowDestructive: boolean;
   }
 
   // Field is type holder for ClickhouseModel
@@ -952,14 +1030,15 @@ export namespace CHBuilder {
     | "bloom_filter"
     | "ngrambf_v1"
     | "tokenbf_v1"
-    | "text";
+    | "text"
+    | CustomSkippingType;
 
   // 컬럼 선언
   export interface Column<
     Name extends string = string,
-    Type extends keyof ClickHouseTypeMap | CustomType =
+    Type extends keyof ClickHouseTypeMap | CustomColumnType =
       | keyof ClickHouseTypeMap
-      | CustomType,
+      | CustomColumnType,
     Default extends string | undefined = string | undefined,
     Schema extends TSchema | undefined = TSchema | undefined,
     QueryValueSchema extends TSchema | undefined = TSchema | undefined,
@@ -1041,6 +1120,10 @@ export class CHModel<Fields extends CHBuilder.FieldsType> {
   constructor(inner: CHBuilder.BuilderFactory) {
     this.inner = inner;
     this.comment = new CHTableComment(inner.tableName);
+
+    if (inner.autoSyncEnabled) {
+      this.sync(inner.autoSyncAllowDestructive);
+    }
   }
 
   public log(msg: string) {
