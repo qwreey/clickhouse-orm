@@ -954,7 +954,7 @@ export class CHBuilder<
     this.withSkipping({
       expr: "level",
       name: "level_index",
-      type: "set",
+      type: "set(0)",
     });
     return this as any;
   }
@@ -1028,6 +1028,7 @@ export namespace CHBuilder {
   export type SkippingType =
     | "minmax"
     | "set"
+    | "set(0)"
     | "bloom_filter"
     | "ngrambf_v1"
     | "tokenbf_v1"
