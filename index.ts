@@ -820,12 +820,13 @@ export class CHBuilder<
   /**
    * 빌더가 읽기 전용 상태이면 오류를 발생시킵니다.
    */
-  public ensureWritable() {
+  public ensureWritable(): this {
     if (this.locked) {
       throw Error(
         "This builder instance is in a read-only state. Write operations cannot be performed.",
       );
     }
+    return this;
   }
 
   /**
