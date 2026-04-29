@@ -97,6 +97,24 @@ The underlying `CREATE TABLE` uses `MergeTree`, ordered by `(timestamp, eventId)
 
 All `with*` methods return `this` (fluent API) and put the builder into a **write-only** state — `withExtend` must be called first if you intend to use it.
 
+> **Important: Method Chaining Required for Type Inference**
+>
+> Because `CHBuilder` dynamically constructs the TypeScript type of your table based on the columns you add, you **must** chain the builder methods. If you assign the builder to a variable and call methods on it sequentially, the TypeScript compiler will not update the variable's type, and you will lose all type inference for your columns.
+>
+> **Incorrect (Type is lost):**
+> ```ts
+> const builder = new CHBuilder("Users");
+> builder.withColumn({ name: "age", type: "Int32" }); 
+> const model = builder.build(); // 'model' will not know about the 'age' column
+> ```
+>
+> **Correct (Type is preserved):**
+> ```ts
+> const model = new CHBuilder("Users")
+>   .withColumn({ name: "age", type: "Int32" })
+>   .build(); // 'model' correctly infers the 'age' column
+> ```
+
 ---
 
 #### `withColumn(column)`
