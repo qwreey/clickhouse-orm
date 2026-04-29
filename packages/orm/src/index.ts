@@ -1,5 +1,6 @@
+import util from "node:util";
 import { createClient } from "@clickhouse/client";
-import type { NodeClickHouseClient } from "@clickhouse/client/dist/client";
+import type { NodeClickHouseClient } from "@clickhouse/client/dist/client.js";
 import {
   Type,
   type ObjectOptions,
@@ -11,7 +12,6 @@ import {
   type TString,
   type TUnion,
 } from "@sinclair/typebox";
-import util from "node:util";
 
 // #region default
 /** sql: 유저 사용자 지정 Query */
@@ -74,7 +74,7 @@ export class CustomSkippingType {
 // TODO: improve this
 let client: NodeClickHouseClient | undefined;
 /** create singleton client */
-export function getClient() {
+export function getClient(): NodeClickHouseClient {
   return (client ??= createClient({
     url: process.env.CLICKHOUSE_URL || "http://localhost:8123",
     clickhouse_settings: {
@@ -102,7 +102,7 @@ export async function getCreateTableSqlFor(tableName: string): Promise<string> {
 
     return "undefined";
   } catch (error) {
-    throw Error(`failed to fetch table sql: ${error}`);
+    throw Error(`failed to fetch table sql: ${error}`, { cause: error });
   }
 }
 
@@ -179,10 +179,10 @@ export class CHTableComment {
 
   // Escape value (\ => \\, % => \%)
   private static escape(value: string): string {
-    return value.replace(/\\/g, "\\\\").replace(/\%/g, "\\%");
+    return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%");
   }
   private static unescape(escaped: string): string {
-    return escaped.replace(/\\([\\\%])/g, (_, matched) => {
+    return escaped.replace(/\\([\\%])/g, (_, matched) => {
       if (matched == "%") return "%";
       return "\\";
     });
@@ -760,7 +760,7 @@ export namespace CHQuery {
   export type Result<
     Fields extends CHBuilder.FieldsType,
     Query extends SelectQuery<Fields>,
-  > = Query["select"] extends {}
+  > = Query["select"] extends object
     ? Pick<
         { [K in keyof Fields]: Fields[K]["selected"] },
         keyof CHQuery.OnlyTrue<Query["select"]>
@@ -921,15 +921,15 @@ export class CHBuilder<
         selected: Schema extends TSchema
           ? Static<Schema>
           : Type extends keyof CHBuilder.ClickHouseTypeMap
-          ? CHBuilder.ClickHouseTypeMap[Type]
-          : never;
+            ? CHBuilder.ClickHouseTypeMap[Type]
+            : never;
         query: QueryValueSchema extends TSchema
           ? Static<QueryValueSchema>
           : Schema extends TSchema
-          ? Static<Schema>
-          : Type extends keyof CHBuilder.ClickHouseTypeMap
-          ? CHBuilder.ClickHouseTypeMap[Type]
-          : never;
+            ? Static<Schema>
+            : Type extends keyof CHBuilder.ClickHouseTypeMap
+              ? CHBuilder.ClickHouseTypeMap[Type]
+              : never;
         hasDefault: Default extends string ? true : false;
         vaild: true;
         typeboxSchema: Schema;
@@ -1199,8 +1199,8 @@ export class CHModel<Fields extends CHBuilder.FieldsType> {
       : never]: Fields[K]["typeboxSchema"] extends TSchema
       ? Fields[K]["typeboxSchema"]
       : Fields[K]["typeboxMapped"] extends TSchema
-      ? Fields[K]["typeboxMapped"]
-      : TAny;
+        ? Fields[K]["typeboxMapped"]
+        : TAny;
   }> {
     const properties = {} as any;
     for (const column of this.inner.columnList) {
@@ -1219,6 +1219,10 @@ export class CHModel<Fields extends CHBuilder.FieldsType> {
    * 잠긴 상태로 반환되며 withExtend 이외의 목적으로 사용되지 않아야합니다. */
   public get builder(): CHBuilder<Fields> {
     return CHBuilder.fromFactory(this.inner) as any;
+  }
+
+  public get factory(): Readonly<CHBuilder.BuilderFactory> {
+    return this.inner;
   }
 
   /**

@@ -1,0 +1,44 @@
+{
+  "name": "@qwreey-clickhouse/fastify-typebox-gen",
+  "version": "1.0.0",
+  "description": "Fastify endpoint generator with typebox schema support",
+  "keywords": [
+    "clickhouse",
+    "orm",
+    "typescript",
+    "fastify",
+    "typebox"
+  ],
+  "homepage": "https://github.com/qwreey/clickhouse-orm#readme",
+  "bugs": {
+    "url": "https://github.com/qwreey/clickhouse-orm/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qwreey/clickhouse-orm.git"
+  },
+  "license": "MIT",
+  "author": "me@qwreey.moe",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "../../node_modules/typescript/bin/tsc",
+    "check:tsc": "../../node_modules/typescript/bin/tsc --noemit"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@qwreey-clickhouse/orm": "^1.0.0"
+  }
+}
