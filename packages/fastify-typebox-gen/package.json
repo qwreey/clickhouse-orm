@@ -27,7 +27,8 @@
   ],
   "scripts": {
     "build": "../../node_modules/typescript/bin/tsc",
-    "check:tsc": "../../node_modules/typescript/bin/tsc --noemit"
+    "check:tsc": "../../node_modules/typescript/bin/tsc --noemit",
+    "prepare": "npm run build"
   },
   "exports": {
     ".": {
