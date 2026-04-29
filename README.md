@@ -3,7 +3,7 @@
 |    |    |
 | -- | -- |
 | ![image](./docimage/image1.png) | ![image](./docimage/image2.png) |
-Type supported!
+| Query type supported! | Insertion and typebox type supported! |
 
 A lightweight, type-safe ORM layer around `@clickhouse/client` for ClickHouse analytics tables.
 
