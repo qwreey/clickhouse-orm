@@ -116,16 +116,6 @@ export function verifyName(name: string): boolean {
   }
   return true;
 }
-
-function normalizeForDiff<Content extends string | undefined>(
-  content: Content,
-): Content extends string
-  ? Content extends undefined
-    ? string | undefined
-    : string
-  : undefined {
-  return content?.normalize()?.replace(/\s/g, "") as any;
-}
 // #endregion default
 
 // #region Comment
@@ -308,17 +298,11 @@ class CHMigration {
         (await this.comment.getValue(`#index_${dbItem.name}`)) ?? "null",
       ) as CHBuilder.Skipping | null;
 
-      // Calculate diff
-      const dbDiff =
-        normalizeForDiff(matched.expr) != normalizeForDiff(dbItem.expr) ||
-        normalizeForDiff(matched.type.toString()) !=
-          normalizeForDiff(dbItem.type.toString());
-      const migrationDiff =
-        matched.expr != lastMigration?.expr ||
-        matched.type != lastMigration?.type;
-
       // Should be updated
-      if (dbDiff && migrationDiff) {
+      if (
+        matched.expr != lastMigration?.expr ||
+        matched.type != lastMigration?.type
+      ) {
         this.log(`update skipping '${matched.name}'`);
         await this.deleteSkipping(matched);
         await this.createSkipping(matched);
@@ -338,46 +322,23 @@ class CHMigration {
   }
 
   // Manage columns
-  private static columnNormalize(
-    base: CHBuilder.Column,
-  ): CHMigration.NormalizedColumn {
-    return {
-      name: base.name.trim(),
-      type: normalizeForDiff(base.type.toString()),
-      default: normalizeForDiff(base.default) ?? "",
-      codec: normalizeForDiff(base.codec)?.toUpperCase() ?? "",
-    };
-  }
-  private static dbColumnNormalize(
-    base: CHMigration.DBColumn,
-  ): CHMigration.NormalizedColumn {
-    return {
-      name: base.name.trim(),
-      type: normalizeForDiff(base.type),
-      default: normalizeForDiff(base.default_expression) ?? "",
-      codec: normalizeForDiff(base.compression_codec)?.toUpperCase() ?? "",
-    };
-  }
-  private static diffColumn(
-    define: CHMigration.NormalizedColumn,
-    db: CHMigration.NormalizedColumn,
-  ): boolean {
-    // Type is different
-    if (define.type != db.type) return true;
+  private async updateColumn(
+    column: CHBuilder.Column,
+    method: "MODIFY" | "ADD",
+  ) {
+    // Construct sql parts
+    const defaultPart = column.default ? `DEFAULT ${column.default}` : "";
+    const codecPart = column.codec ? `CODEC(${column.codec})` : "";
+    const fullDefine =
+      `${column.type.toString()} ${defaultPart} ${codecPart}`.trim();
 
-    // Default is different
-    if (define.default != db.default) return true;
-
-    // codec is different(empty not match)
-    const dbCodecIsEmpty =
-      db.codec == "" || db.codec.includes("NONE") || db.codec.includes("LZ4");
-    const defineCodecIsEmpty = define.codec == "" || define.codec == "NONE";
-    if (defineCodecIsEmpty != dbCodecIsEmpty) return true;
-
-    // codec is different(content is not match)
-    if (!defineCodecIsEmpty && !db.codec.includes(define.codec)) return true;
-
-    return false;
+    await this.command(
+      `ALTER TABLE ${this.inner.tableName} ${method} COLUMN ${column.name} ${fullDefine}`,
+    );
+    await this.comment.setValue(
+      `#column_${column.name}`,
+      JSON.stringify(column),
+    );
   }
   private async syncColumn(allowDestructive: boolean): Promise<boolean> {
     let updated = false;
@@ -395,33 +356,27 @@ class CHMigration {
       if (item.unmigratable) continue;
       const dbItem = dbList.find((i) => i.name === item.name);
 
-      // Construct sql parts
-      const defaultPart = item.default ? `DEFAULT ${item.default}` : "";
-      const codecPart = item.codec ? `CODEC(${item.codec})` : "";
-      const fullDefine =
-        `${item.type.toString()} ${defaultPart} ${codecPart}`.trim();
-
       // Create new column
       if (!dbItem) {
         this.log(`create new column '${item.name}'`);
-        await this.command(
-          `ALTER TABLE ${this.inner.tableName} ADD COLUMN ${item.name} ${fullDefine}`,
-        );
+        await this.updateColumn(item, "ADD");
         updated = true;
         continue;
       }
 
+      // Fetch last on status
+      const lastMigration = JSON.parse(
+        (await this.comment.getValue(`#column_${item.name}`)) ?? "null",
+      ) as CHBuilder.Column | null;
+
       // Update column
       if (
-        CHMigration.diffColumn(
-          CHMigration.columnNormalize(item),
-          CHMigration.dbColumnNormalize(dbItem),
-        )
+        lastMigration?.codec != item.codec ||
+        lastMigration?.default != item.default ||
+        lastMigration?.type != item.type
       ) {
         this.log(`update existing column ${item.name}`);
-        await this.command(
-          `ALTER TABLE ${this.inner.tableName} MODIFY COLUMN ${item.name} ${fullDefine}`,
-        );
+        await this.updateColumn(item, "MODIFY");
         updated = true;
       }
     }
@@ -429,9 +384,10 @@ class CHMigration {
     // Show column should be deleted
     for (const dbItem of dbList) {
       if (this.inner.columnList.find((i) => i.name == dbItem.name)) continue;
-      const dropQuery = `ALTER TABLE ${this.inner.tableName} DROP COLUMN ${dbItem.name};`;
+      const dropQuery = `ALTER TABLE ${this.inner.tableName} DROP COLUMN ${dbItem.name}`;
       if (allowDestructive) {
         await this.command(dropQuery);
+        await this.comment.deleteValue(`#column_${dbItem.name}`);
         updated = true;
       } else {
         this.log(
@@ -472,8 +428,7 @@ class CHMigration {
         query: `
           CREATE TABLE IF NOT EXISTS ${this.inner.tableName} (
             timestamp DateTime64(3) DEFAULT now64(3),
-            eventId UUID DEFAULT generateUUIDv4(),
-            level Enum8('DEBUG'=1, 'INFO'=2, 'WARN'=3, 'ERROR'=4, 'FATAL'=5)
+            eventId UUID DEFAULT generateUUIDv4()
           )
           ENGINE = MergeTree()
           ORDER BY (timestamp, eventId)
