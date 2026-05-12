@@ -28,6 +28,7 @@ A lightweight, type-safe ORM layer around `@clickhouse/client` for ClickHouse an
 - [Where Clause](#where-clause)
 - [Utility Classes](#utility-classes)
 - [Utility Functions](#utility-functions)
+- [Security Notice](#security-notice)
 
 - [Real-World Example](#real-world-example)
 
@@ -558,6 +559,14 @@ Fetches the raw `SHOW CREATE TABLE` SQL string directly from the database. This 
 
 #### `verifyName(name: string)`
 Validates whether a given string is a safe and valid ClickHouse identifier (such as a table or column name). It ensures the name starts with a letter or underscore, followed only by alphanumeric characters or underscores (`/^[a-zA-Z_][a-zA-Z0-9_]*$/`). Useful for sanitizing dynamic inputs to prevent query errors.
+
+---
+
+## Security Notice
+
+This ORM relies strictly on TypeScript's type system for data validation and query safety. Bypassing type checks (e.g., by using `any` or `@ts-ignore`) breaks these protections and may expose your database to SQL injection vulnerabilities. 
+
+Furthermore, utility classes like `UnsafeRawQuery` and `TypedValue` inject raw strings directly into queries. The ORM assumes these inputs are already validated and safe; it does not perform any internal sanitization. Any security issues arising from bypassing TypeScript checks or misusing raw query utilities are strictly the responsibility of the developer. Ensure you only pass trusted data to these functions.
 
 ---
 

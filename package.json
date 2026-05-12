@@ -24,17 +24,17 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces",
-    "check": "npm run check:tsc && npm run check:eslint",
+    "check": "npm run check:tsc && npm run check:eslint && npm run check:format",
     "check:eslint": "eslint",
     "check:tsc": "npm run check:tsc --workspaces",
-    "format:check": "prettier --check .",
-    "format:fix": "prettier --write ."
+    "check:format": "prettier --check .",
+    "fix:format": "prettier --write .",
+    "prettier": "prettier"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "eslint": "^10.2.1",
     "prettier": "^3.8.3",
-    "tsc": "^2.0.4",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.59.1"
   }

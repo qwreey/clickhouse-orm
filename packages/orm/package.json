@@ -26,8 +26,13 @@
   ],
   "scripts": {
     "build": "../../node_modules/typescript/bin/tsc",
+    "check": "npm run check:tsc && npm run check:eslint && npm run check:format",
     "check:tsc": "../../node_modules/typescript/bin/tsc --noemit",
-    "prepare": "npm run build"
+    "check:eslint": "npm run --prefix ../../ check:eslint -- packages/orm/src",
+    "check:format": "npm run --prefix ../../ prettier -- --check packages/orm/src",
+    "fix:format": "npm run --prefix ../../ prettier -- --write packages/orm/src",
+    "init": "npm ci --include-workspace-root --include=dev",
+    "prepack": "npm run init && npm run check && npm run build"
   },
   "exports": {
     ".": {
